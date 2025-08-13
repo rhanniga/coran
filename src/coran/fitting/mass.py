@@ -92,16 +92,12 @@ class FitDescriptor:
 
     def _generate_fit_strings(self):
 
-        # Amplitude parameter (shared)
-        amplitude_par = 0
+        fit_par_index = 0
 
-        fit_par_index = 1
-
-        # Signal component
         self._par_index_start_signal = fit_par_index
         if self._fit_type_signal == FitTypeSignal.GAUS:
-            self._fit_string_signal = f"[{amplitude_par}]*Numba::gaus(x, [{fit_par_index}], [{fit_par_index + 1}])"
-            fit_par_index += 2
+            self._fit_string_signal = f"[{fit_par_index}]*Numba::gaus(x, [{fit_par_index+1}], [{fit_par_index + 2}])"
+            fit_par_index += 3
 
             self._par_index_amplitude = 0
             self._par_index_mean = 1
@@ -109,8 +105,8 @@ class FitDescriptor:
 
         elif self._fit_type_signal == FitTypeSignal.CRYSTAL:
             self._fit_string_signal = (
-                f"[{amplitude_par}]*Numba::double_crystal(x, [{fit_par_index}], [{fit_par_index + 1}], "
-                f"[{fit_par_index + 2}], [{fit_par_index + 3}], [{fit_par_index + 4}], [{fit_par_index + 5}])"
+                f"[{fit_par_index}]*Numba::double_crystal(x, [{fit_par_index + 1}], [{fit_par_index + 2}], "
+                f"[{fit_par_index + 3}], [{fit_par_index + 4}], [{fit_par_index + 5}], [{fit_par_index + 6}])"
             )
 
             # happens to be the same as the Gaussian case
@@ -118,19 +114,23 @@ class FitDescriptor:
             self._par_index_mean = 1
             self._par_index_width = 2
 
-            fit_par_index += 6
+            fit_par_index += 7
 
         # Background component
         self._par_index_start_bg = fit_par_index
         if self._fit_type_bg == FitTypeBg.POL1:
-            self._fit_string_bg = f"pol1({fit_par_index})"
+            self._fit_string_bg = f"pol1(0)"
+            self._fit_string_bg_tmp = f"pol1({fit_par_index})"
             fit_par_index += 2
         elif self._fit_type_bg == FitTypeBg.POL2:
-            self._fit_string_bg = f"pol2({fit_par_index})"
+            self._fit_string_bg = f"pol2(0)"
+            self._fit_string_bg_tmp = f"pol2({fit_par_index})"
             fit_par_index += 3
 
         # Total fit string
-        self._fit_string_total = f"{self._fit_string_signal} + {self._fit_string_bg}"
+        self._fit_string_total = (
+            f"{self._fit_string_signal} + {self._fit_string_bg_tmp}"
+        )
 
         self._num_pars = fit_par_index
 
@@ -265,11 +265,28 @@ class MassFit:
                 fit_total.SetParameter(par_index, starting_par.value)
 
         self._fit_total = fit_total
+        # for now we fix the BG parameters to straight line between fit range
+        if self._fit_type_bg == FitTypeBg.POL1:
+            self._overwrite_fit_parameters_bg()
+
         self._fit_total.SetNpx(1000)
-        print(
-            f"Configured fit total: {self._fit_descriptor.fit_label_total} with "
-            f"{self._fit_descriptor.num_pars} parameters."
-            f" and with fit string: {self._fit_descriptor.fit_string_total}"
+
+    def _overwrite_fit_parameters_bg(self):
+        bg_bin_low = self._hist.FindBin(self._fit_range[0])
+        bg_bin_high = self._hist.FindBin(self._fit_range[1])
+
+        bg_point_low = [self._fit_range[0], self._hist.GetBinContent(bg_bin_low)]
+        bg_point_high = [self._fit_range[1], self._hist.GetBinContent(bg_bin_high)]
+
+        bg_starting_params = get_straight_line(bg_point_low, bg_point_high)
+
+        self._fit_total.FixParameter(
+            self._fit_descriptor.par_index_start_bg,
+            bg_starting_params[0],
+        )
+        self._fit_total.FixParameter(
+            self._fit_descriptor.par_index_start_bg + 1,
+            bg_starting_params[1],
         )
 
     def _configure_fit_signal(self):
@@ -296,19 +313,13 @@ class MassFit:
             *self._fit_range,
         )
 
-        # Update signal component parameters
-        # Amplitude (parameter 0)
-        self._fit_signal.SetParameter(0, self._fit_total.GetParameter(0))
-
         # Signal shape parameters
         for par_index in range(
             self._fit_descriptor.par_index_start_signal,
             self._fit_descriptor.par_index_start_bg,
         ):
             self._fit_signal.SetParameter(
-                par_index
-                - self._fit_descriptor.par_index_start_signal
-                + 1,  # +1 for amplitude
+                par_index - self._fit_descriptor.par_index_start_signal,
                 self._fit_total.GetParameter(par_index),
             )
 
@@ -376,6 +387,10 @@ class MassFit:
     @property
     def fit_total(self) -> rt.TF1:
         return self._fit_total
+
+    @property
+    def hist(self) -> rt.TH1D:
+        return self._hist
 
     @property
     def fit_signal(self) -> rt.TF1:
