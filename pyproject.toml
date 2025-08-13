@@ -1,0 +1,17 @@
+[project]
+name = "coran"
+version = "0.1.0"
+description = "Python package for my angular correlation analysis"
+readme = "README.md"
+authors = [
+    { name = "rhanniga", email = "ryan.hannigan@cern.ch" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+coran = "coran:main"
+
+[build-system]
+requires = ["uv_build>=0.8.9,<0.9.0"]
+build-backend = "uv_build"
