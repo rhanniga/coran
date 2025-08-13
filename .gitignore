@@ -9,6 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
-# larger files and plots
+# ROOT files and plots/cached outputs
+output/
+input/
+
+# larger files and plots (that may not be in their dedicated spots)
 *.root
 *.pdf
+
