@@ -3,9 +3,9 @@ from enum import Enum
 
 import ROOT as rt
 
-from coran.fitting.common import StartingPar, Observable
+from coran.models import StartingPar, Observable
 
-# TODO: think about where to put this
+# TODO: think about where to put this (also depends on total number of bins on dphi dist)
 BINS_AVG_4 = [1, 8, 9, 16]
 BINS_AVG_6 = [1, 2, 7, 8, 9, 16]
 

@@ -7,11 +7,14 @@ import coran.config as cfg
 from coran.corrections.mixed_event import AcceptanceCorrector
 from coran.corrections.sideband import SidebandCorrector
 
-from coran.ranges import RangeMassK0
-
-from coran.fitting.common import StartingPar, Observable
 from coran.fitting.correlation import DeltaPhiFit
 from coran.fitting.mass import MassFit, FitTypeSignal, FitTypeBg
+
+from coran.models import StartingPar, Observable
+
+from coran.ranges import RangeMassK0
+
+
 
 
 input_file = rt.TFile("input/" + cfg.INPUT_FILENAME, "READ")
@@ -24,8 +27,8 @@ h_k0_dist = input_list.FindObject("fDphiHK0Eff")
 h_k0_mixed_dist = input_list.FindObject("fDphiHK0Mixed")
 
 
-h_k0_dist.GetAxis(cfg.AXIS_H_K_PT_TRIGGER).SetRangeUser(4.0, 7.999)
-h_k0_mixed_dist.GetAxis(cfg.AXIS_H_K_PT_TRIGGER).SetRangeUser(4.0, 7.999)
+h_k0_dist.GetAxis(cfg.AXIS_H_K_PT_TRIGGER).SetRangeUser(*cfg.RANGE_PT_TRIG)
+h_k0_mixed_dist.GetAxis(cfg.AXIS_H_K_PT_TRIGGER).SetRangeUser(*cfg.RANGE_PT_TRIG)
 
 h_k0_dist_6d = h_k0_dist.Projection(1, 2, 3, 4, 5, 6)
 
@@ -51,9 +54,7 @@ for range_mult in cfg.RANGES_MULTIPLICITY:
         h_k0_dist_5d.GetAxis(0).SetRangeUser(*range_pt_assoc)
         h_k0_dist_4d = h_k0_dist_5d.Projection(1, 2, 3, 4)
 
-        # h_k0_mass = h_k0_dist.Projection(cfg.AXIS_H_K_MASS, "O")
         h_k0_mass = h_k0_dist_4d.Projection(2)
-        # h_k0_mass = k0_dist.Projection(cfg.AXIS_V0_MASS)
 
         h_k0_mass_fit = MassFit(
             hist=h_k0_mass,
@@ -83,4 +84,4 @@ for range_mult in cfg.RANGES_MULTIPLICITY:
         h_k0_mass.Draw()
         h_k0_mass_fit.fit_total.Draw("same")
 
-        canvas.SaveAs(f"output/{range_pt_assoc}_{range_mult}_mass_fit.png")
+        canvas.SaveAs(f"test.pdf")

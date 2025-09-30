@@ -6,8 +6,7 @@ from uuid import uuid4, UUID
 import ROOT as rt
 
 from coran.ranges import RangeMassK0
-from coran.fitting.common import Observable
-from coran.fitting.common import StartingPar
+from coran.models import Observable, StartingPar
 
 FUN_PARS_CRYSTAL = 7
 FUN_PARS_GAUS = 3
