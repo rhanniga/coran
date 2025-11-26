@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
 
+class ParticleType(Enum):
+    CHARGED = "charged"
+    K0S = "K0S"
+    LAMBDA = "Lambda"
+    ANTI_LAMBDA = "Anti-Lambda"
 
 class RangeBase(ABC):
-    def __init__(self, low: float, high: float):
+    def __init__(self, low: float, high: float, particle: ParticleType):
         self._low = low
         self._high = high
 

@@ -207,35 +207,93 @@ class DeltaPhiFit:
         dist: rt.TH1D,
         fit_type_jet: FitTypeJet,
         fit_type_ue: FitTypeUE,
-        starting_pars: list[StartingPar],
+        v2_values: tuple[float, float] | None = None,
+        reject_negative_yields: bool = False,
     ) -> None:
 
         self._id = uuid4()
         self._dist = dist.Clone(f"{self._id}_dist")
         self._fit_type_jet = fit_type_jet
         self._fit_type_ue = fit_type_ue
-        self._starting_pars = starting_pars
+        self._v2_values = v2_values
+        self._reject_negative_yields = reject_negative_yields
 
         self._fit_descriptor = FitDescriptor(
             fit_type_jet=self._fit_type_jet, fit_type_ue=self._fit_type_ue
-        )
-
-        assert self._fit_descriptor.num_pars == len(self._starting_pars), (
-            f"Number of starting parameters ({len(self._starting_pars)}) does not match "
-            f"the number of parameters in the fit descriptor ({self._fit_descriptor.num_pars})."
         )
 
         self._ue_avg, self._ue_error = get_ue_avg(
             self._dist, num_bins=4 if fit_type_ue == FitTypeUE.AVG_4 else 6
         )
 
+        self._starting_pars: list[StartingPar] = []
+
         self._fit_total = None
         self._fit_ue = None
         self._fit_jet = None
 
+        self._yield_ns: Observable | None = None
+        self._yield_as: Observable | None = None
+        self._yield_total: Observable | None = None
+        self._yield_ue: Observable | None = None
+
+        self._configure_starting_params()
         self._configure_fits()
 
         self._fit_dist()
+
+        self._extract_yields()
+
+    def _configure_starting_params(self):
+        if self._fit_type_jet == FitTypeJet.GAUS:
+            guess_amp_ns = self._dist.GetBinContent(self._dist.FindBin(0)) - self._ue_avg
+            guess_width_ns = 0.5
+            
+            guess_amp_as = self._dist.GetBinContent(self._dist.FindBin(rt.TMath.Pi())) - self._ue_avg
+            guess_width_as = 1.0
+            
+            self._starting_pars.append(StartingPar(value=guess_amp_ns, limits=(0.3 * guess_amp_ns, 2.0 * guess_amp_ns)))
+            self._starting_pars.append(StartingPar(value=guess_width_ns, limits=(0.1, 2.0)))
+            self._starting_pars.append(StartingPar(value=0.0, fixed=True))  # mean fixed at 0
+            
+            guess_amp_ns_replica = guess_amp_ns / 10
+            self._starting_pars.append(StartingPar(value=guess_amp_ns_replica, limits=(0.3 * guess_amp_ns_replica, 2.0 * guess_amp_ns_replica)))
+            self._starting_pars.append(StartingPar(value=guess_width_ns, limits=(0.1, 2.0)))
+            self._starting_pars.append(StartingPar(value=2 * rt.TMath.Pi(), fixed=True))
+            
+            self._starting_pars.append(StartingPar(value=guess_amp_as, limits=(0.3 * guess_amp_as, 2.0 * guess_amp_as)))
+            self._starting_pars.append(StartingPar(value=guess_width_as, limits=(0.1, 2.0)))
+            self._starting_pars.append(StartingPar(value=rt.TMath.Pi(), fixed=True))
+            
+            guess_amp_as_replica = guess_amp_as / 10
+            self._starting_pars.append(StartingPar(value=guess_amp_as_replica, limits=(0.3 * guess_amp_as_replica, 2.0 * guess_amp_as_replica)))
+            self._starting_pars.append(StartingPar(value=guess_width_as, limits=(0.1, 2.0)))
+            self._starting_pars.append(StartingPar(value=-rt.TMath.Pi(), fixed=True))
+            
+        elif self._fit_type_jet == FitTypeJet.VON:
+            guess_amp_ns = self._dist.GetBinContent(self._dist.FindBin(0)) - self._ue_avg
+            guess_kappa_ns = 4.0  # corresponds roughly to width ~0.5
+            
+            guess_amp_as = self._dist.GetBinContent(self._dist.FindBin(rt.TMath.Pi())) - self._ue_avg
+            guess_kappa_as = 2.0  # corresponds roughly to width ~1.0
+            
+            self._starting_pars.append(StartingPar(value=guess_amp_ns, limits=(0.3 * guess_amp_ns, 2.0 * guess_amp_ns)))
+            self._starting_pars.append(StartingPar(value=guess_kappa_ns, limits=(0.1, 20.0)))
+            
+            self._starting_pars.append(StartingPar(value=guess_amp_as, limits=(0.3 * guess_amp_as, 2.0 * guess_amp_as)))
+            self._starting_pars.append(StartingPar(value=guess_kappa_as, limits=(0.1, 20.0)))
+        
+        if self._fit_type_ue == FitTypeUE.V2:
+            self._starting_pars.append(StartingPar(value=self._ue_avg))
+            if self._v2_values is not None:
+                v2_trig, v2_assoc = self._v2_values
+                self._starting_pars.append(StartingPar(value=v2_trig, fixed=True))
+                self._starting_pars.append(StartingPar(value=v2_assoc, fixed=True))
+            else:
+                self._starting_pars.append(StartingPar(value=0.08), fixed=True)
+                self._starting_pars.append(StartingPar(value=0.08), fixed=True)
+        elif self._fit_type_ue in [FitTypeUE.AVG_4, FitTypeUE.AVG_6]:
+            self._starting_pars.append(StartingPar(value=self._ue_avg))
 
     def _configure_fits(self):
         self._configure_fit_total()
@@ -311,6 +369,80 @@ class DeltaPhiFit:
                 par_index - self._fit_descriptor.par_index_start_ue,
                 self._fit_total.GetParameter(par_index),
             )
+
+    def _extract_yields(self):
+        bin_width = self._dist.GetBinWidth(1)
+
+        yield_total = (
+            self._fit_total.Integral(-rt.TMath.Pi() / 2, 3 * rt.TMath.Pi() / 2) / bin_width
+        )
+        yield_total_error = (
+            self._fit_total.IntegralError(-rt.TMath.Pi() / 2, 3 * rt.TMath.Pi() / 2)
+            / bin_width
+        )
+
+        yield_ue = self._fit_ue.Integral(-rt.TMath.Pi() / 2, 3 * rt.TMath.Pi() / 2) / bin_width
+        yield_ue_error = self._fit_ue.GetParError(0) * (2 * rt.TMath.Pi()) / bin_width
+        yield_ue_error_halved = yield_ue_error / 2
+
+
+        yield_ns = 0
+        yield_as = 0
+        yield_ns_error = 0
+        yield_as_error = 0
+
+        for bin_i in range(1, 9):
+            ns_yield_tmp = self._dist.GetBinContent(bin_i) - self._fit_ue.Eval(
+                self._dist.GetBinCenter(bin_i)
+            )
+            as_yield_tmp = self._dist.GetBinContent(bin_i + 8) - self._fit_ue.Eval(
+                self._dist.GetBinCenter(bin_i + 8)
+            )
+
+            if self._reject_negative_yields:
+                # only accept non-negative yields
+                if ns_yield_tmp >= 0:
+                    yield_ns_error += self._dist.GetBinError(bin_i) ** 2
+                    yield_ns += ns_yield_tmp
+
+                if as_yield_tmp >= 0:
+                    yield_as += as_yield_tmp
+                    yield_as_error += self._dist.GetBinError(bin_i + 8) ** 2
+
+            else:
+                yield_ns += ns_yield_tmp
+                yield_as += as_yield_tmp
+                yield_ns_error += self._dist.GetBinError(bin_i) ** 2
+                yield_as_error += self._dist.GetBinError(bin_i + 8) ** 2
+
+        yield_ns_error += yield_ue_error_halved**2
+        yield_as_error += yield_ue_error_halved**2
+
+        yield_ns_error = rt.TMath.Sqrt(yield_ns_error)
+        yield_as_error = rt.TMath.Sqrt(yield_as_error)
+
+        self._yield_ns = Observable(value=yield_ns, stat_error=yield_ns_error)
+        self._yield_as = Observable(value=yield_as, stat_error=yield_as_error)
+        self._yield_total = Observable(value=yield_total, stat_error=yield_total_error)
+        self._yield_ue = Observable(value=yield_ue, stat_error=yield_ue_error)
+
+
+
+    @property
+    def ns_yield(self) -> Observable | None:
+        return self._yield_ns
+
+    @property
+    def as_yield(self) -> Observable | None:
+        return self._yield_as
+
+    @property
+    def ue_yield(self) -> Observable | None:
+        return self._yield_ue
+
+    @property
+    def total_yield(self) -> Observable | None:
+        return self._yield_total
 
     @property
     def fit_width_ns(self) -> Observable:
@@ -396,3 +528,7 @@ class DeltaPhiFit:
     @property
     def fit_label_jet(self) -> str:
         return self._fit_descriptor.fit_label_jet
+    
+    @property
+    def dist(self) -> rt.TH1D:
+        return self._dist

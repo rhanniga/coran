@@ -84,15 +84,9 @@ def write_results_to_root(
     total_yield_error.Write()
 
 def perform_v0_analysis(
-    input_mass_hist: rt.TH1D,
     input_correlation_dist: rt.THnSparse,
     input_correlation_dist_mixed: rt.THnSparse,
-    particle_type: str,
     num_triggers: float,
-    mass_fit_type_signal: FitTypeSignal,
-    mass_fit_type_bg: FitTypeBg,
-    mass_signal_range: tuple[float, float],
-    mass_sideband_range: tuple[float, float],
     mixed_event_scale_type: ScaleType,
     correlation_fit_type_jet: FitTypeJet,
     correlation_fit_type_ue: FitTypeUE,
@@ -101,30 +95,20 @@ def perform_v0_analysis(
     variation_name: str,
 ):
 
-    mass_fit = MassFit(
-        input_mass_hist,
-        particle_type=particle_type,
-        range_signal=mass_signal_range,
-        range_sideband=mass_sideband_range,
-        fit_type_signal=mass_fit_type_signal,
-        fit_type_bg=mass_fit_type_bg,
-        fit_range=cfg.RANGE_FIT_MASS,
-    )
-    
     signal_min = mass_fit.fit_mean.value + mass_signal_range[0]*mass_fit.fit_width.value
     signal_max = mass_fit.fit_mean.value + mass_signal_range[1]*mass_fit.fit_width.value
     input_correlation_dist.GetAxis(2).SetRangeUser(signal_min, signal_max - cfg.EPSILON)
     input_correlation_dist_mixed.GetAxis(2).SetRangeUser(signal_min, signal_max - cfg.EPSILON)
     signal_3d_same = input_correlation_dist.Projection(0,1,3)
     signal_3d_mixed = input_correlation_dist_mixed.Projection(0,1,3)
-    
+
     sideband_min = mass_fit.fit_mean.value + mass_sideband_range[0]*mass_fit.fit_width.value
     sideband_max = mass_fit.fit_mean.value + mass_sideband_range[1]*mass_fit.fit_width.value
     input_correlation_dist.GetAxis(2).SetRangeUser(sideband_min, sideband_max - cfg.EPSILON)
     input_correlation_dist_mixed.GetAxis(2).SetRangeUser(sideband_min, sideband_max - cfg.EPSILON)
     sideband_3d = input_correlation_dist.Projection(0,1,3)
     sideband_3d_mixed = input_correlation_dist_mixed.Projection(0,1,3)
-    
+
     signal_2d_corrector = AcceptanceCorrector(
         signal_3d_same,
         signal_3d_mixed,
@@ -136,27 +120,9 @@ def perform_v0_analysis(
     )
     signal_2d_corrector.corrected_2d.GetXaxis().SetRangeUser(*cfg.RANGE_DELTA_ETA)
     
-    sideband_2d_corrector = AcceptanceCorrector(
-        sideband_3d,
-        sideband_3d_mixed,
-        scale_type=mixed_event_scale_type,
-        num_bins_z_vertex=cfg.NUM_BINS_Z_VERTEX,
-    )
-    sideband_2d_corrector.corrected_2d.Scale(
-        1/num_triggers
-    )
-    sideband_2d_corrector.corrected_2d.GetXaxis().SetRangeUser(*cfg.RANGE_DELTA_ETA)
 
-    sideband_corrector = SidebandCorrector(
-        signal_2d=signal_2d_corrector.corrected_2d,
-        sideband_2d=sideband_2d_corrector.corrected_2d,
-        purity=mass_fit.purity,
-        missed_fraction=mass_fit.missed_fraction,
-        branching_ratio=cfg.BRANCHING_RATIO_K0,
-    )
-    
     final_dphi = sideband_corrector.corrected_2d.ProjectionY().Clone()
-    
+
     delta_phi_fit = DeltaPhiFit(
         final_dphi,
         fit_type_jet=correlation_fit_type_jet,

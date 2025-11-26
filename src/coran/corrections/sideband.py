@@ -12,10 +12,6 @@ class SidebandCorrector:
         missed_fraction: float,
         branching_ratio: float = 0.692,
     ):
-        """This class corrects for the combinatorial background using the sideband technique,
-        as well as a few smaller corrections that are too trivial to isolate (missed fraction
-        from signal region and the branching ratio of the V0)"""
-
         self._id = uuid4()
         self._signal_2d = signal_2d.Clone(f"{self._id}_signal_2d")
         self._sideband_2d = sideband_2d.Clone(f"{self._id}_sideband_2d")

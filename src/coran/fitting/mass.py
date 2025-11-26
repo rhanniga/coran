@@ -1,15 +1,46 @@
 from dataclasses import dataclass
-from math import exp
 from enum import Enum
 from uuid import uuid4, UUID
 
 import ROOT as rt
 
-from coran.ranges import RangeMassK0
 from coran.models import Observable, StartingPar
 
-FUN_PARS_CRYSTAL = 7
-FUN_PARS_GAUS = 3
+# define C++ functions for fitting, since the DCSB is not included in ROOT by default
+rt.gInterpreter.Declare("""
+double double_crystal(double x, double mean, double sigma, double alpha_l, double alpha_h, double n_l, double n_h) {
+    if (sigma == 0 || n_l == 0 || n_h == 0 || alpha_l == 0 || alpha_h == 0) {
+        return 0.0;
+    }
+    
+    double arg = (x - mean) / sigma;
+    double f1_l = alpha_l / n_l;
+    double f1_h = alpha_h / n_h;
+    double f2_l = (n_l / alpha_l) - alpha_l - arg;
+    double f2_h = (n_h / alpha_h) - alpha_h + arg;
+    
+    if (arg >= -alpha_l && arg <= alpha_h) {
+        return exp(-0.5 * arg * arg);
+    } else if (arg < -alpha_l) {
+        return exp(-0.5 * alpha_l * alpha_l) * pow(f1_l * f2_l, -n_l);
+    } else {
+        return exp(-0.5 * alpha_h * alpha_h) * pow(f1_h * f2_h, -n_h);
+    }
+}
+
+double gaus(double x, double mean, double sigma) {
+    if (sigma == 0) {
+        return 1.0e30;
+    }
+    
+    double arg = (x - mean) / sigma;
+    
+    if (abs(arg) > 39.0) {
+        return 0.0;
+    }
+    return exp(-0.5 * arg * arg);
+}
+""")
 
 
 class FitTypeSignal(Enum):
@@ -22,45 +53,6 @@ class FitTypeBg(Enum):
     POL2 = "Quadratic"
 
 
-@rt.Numba.Declare(["double"] * FUN_PARS_CRYSTAL, "double")
-def double_crystal(
-    x: float,
-    mean: float,
-    sigma: float,
-    alpha_l: float,
-    alpha_h: float,
-    n_l: float,
-    n_h: float,
-) -> float:
-
-    if sigma == 0 or n_l == 0 or n_h == 0 or alpha_l == 0 or alpha_h == 0:
-        return 0.0
-
-    arg = (x - mean) / sigma
-    f1_l, f1_h = alpha_l / n_l, alpha_h / n_h
-    f2_l = (n_l / alpha_l) - alpha_l - arg
-    f2_h = (n_h / alpha_h) - alpha_h + arg
-
-    if -alpha_l <= arg <= alpha_h:
-        return exp(-0.5 * arg**2)
-    if arg < -alpha_l:
-        return exp(-0.5 * alpha_l**2) * pow(f1_l * f2_l, -n_l)
-    return exp(-0.5 * alpha_h**2) * pow(f1_h * f2_h, -n_h)
-
-
-@rt.Numba.Declare(["double"] * FUN_PARS_GAUS, "double")
-def gaus(x: float, mean: float, sigma: float) -> float:
-
-    if sigma == 0:
-        return 1.0e30
-
-    arg = (x - mean) / sigma
-
-    if abs(arg) > 39.0:
-        return 0.0
-    return exp(-0.5 * arg * arg)
-
-
 def get_straight_line(point1, point2):
     # Ensure the points are valid and not identical
     if point1[0] == point2[0]:
@@ -69,7 +61,6 @@ def get_straight_line(point1, point2):
     # Calculate the slope (m) and intercept (b)
     m = (point2[1] - point1[1]) / (point2[0] - point1[0])
     b = point1[1] - m * point1[0]
-
     return b, m
 
 
@@ -95,7 +86,7 @@ class FitDescriptor:
 
         self._par_index_start_signal = fit_par_index
         if self._fit_type_signal == FitTypeSignal.GAUS:
-            self._fit_string_signal = f"[{fit_par_index}]*Numba::gaus(x, [{fit_par_index+1}], [{fit_par_index + 2}])"
+            self._fit_string_signal = f"[{fit_par_index}]*gaus(x, [{fit_par_index+1}], [{fit_par_index + 2}])"
             fit_par_index += 3
 
             self._par_index_amplitude = 0
@@ -104,7 +95,7 @@ class FitDescriptor:
 
         elif self._fit_type_signal == FitTypeSignal.CRYSTAL:
             self._fit_string_signal = (
-                f"[{fit_par_index}]*Numba::double_crystal(x, [{fit_par_index + 1}], [{fit_par_index + 2}], "
+                f"[{fit_par_index}]*double_crystal(x, [{fit_par_index + 1}], [{fit_par_index + 2}], "
                 f"[{fit_par_index + 3}], [{fit_par_index + 4}], [{fit_par_index + 5}], [{fit_par_index + 6}])"
             )
 
@@ -115,7 +106,6 @@ class FitDescriptor:
 
             fit_par_index += 7
 
-        # Background component
         self._par_index_start_bg = fit_par_index
         if self._fit_type_bg == FitTypeBg.POL1:
             self._fit_string_bg = f"pol1(0)"
@@ -126,7 +116,6 @@ class FitDescriptor:
             self._fit_string_bg_tmp = f"pol2({fit_par_index})"
             fit_par_index += 3
 
-        # Total fit string
         self._fit_string_total = (
             f"{self._fit_string_signal} + {self._fit_string_bg_tmp}"
         )
@@ -195,17 +184,22 @@ class MassFit:
         hist: rt.TH1D,
         fit_type_signal: FitTypeSignal,
         fit_type_bg: FitTypeBg,
-        starting_pars: list[StartingPar],
-        range_signal: RangeMassK0,
-        range_sideband: RangeMassK0,
+        particle_type: str,
+        range_signal: tuple[float, float],
+        range_sideband: tuple[float, float],
         fit_range: tuple[float, float] | None = None,
+        debug: bool = False,
     ) -> None:
 
         self._id = uuid4()
-        self._hist = hist.Clone(f"{self._id}_hist")
+        self._hist = hist
+        self._hist.SetName(f"{self._id}_hist")
         self._fit_type_signal = fit_type_signal
         self._fit_type_bg = fit_type_bg
-        self._starting_pars = starting_pars
+        self._debug = debug
+
+        assert particle_type in ["k0", "lambda"], f"Unsupported particle type in MassFit: {particle_type}"
+        self._particle_type = particle_type
 
         self._range_signal = range_signal
         self._range_sideband = range_sideband
@@ -230,18 +224,67 @@ class MassFit:
             fit_type_signal=self._fit_type_signal, fit_type_bg=self._fit_type_bg
         )
 
-        assert self._fit_descriptor.num_pars == len(self._starting_pars), (
-            f"Number of starting parameters ({len(self._starting_pars)}) does not match "
-            f"the number of parameters in the fit descriptor ({self._fit_descriptor.num_pars})."
-        )
-
         self._fit_total = None
         self._fit_signal = None
         self._fit_bg = None
+        self._starting_parameters = None
+
+        self._configure_starting_params()
 
         self._configure_fits()
         self._fit_hist()
         self._compute_parameters()
+
+    def _configure_starting_params(self):
+
+        if self._particle_type == "k0":
+            guess_mass = 0.497611
+            guess_width = 0.01
+        elif self._particle_type == "lambda":
+            guess_mass = 1.115683
+            guess_width = 0.015
+        else:
+            raise NotImplementedError(f"Particle type {self._particle_type} not implemented in MassFit.")
+
+        if self._fit_type_signal == FitTypeSignal.GAUS:
+            starting_pars_signal = [
+                StartingPar(value=self._hist.GetMaximum()),  # Amplitude
+                StartingPar(value=guess_mass, limits=(guess_mass*0.95, guess_mass*1.05)),  # Mean
+                StartingPar(value=guess_width, limits=(0.0, guess_width*5)),  # Width
+            ]
+        elif self._fit_type_signal == FitTypeSignal.CRYSTAL:
+            starting_pars_signal = [
+                StartingPar(value=self._hist.GetMaximum()),  # Amplitude
+                StartingPar(value=guess_mass, limits=(guess_mass*0.95, guess_mass*1.05)),  # Mean
+                StartingPar(value=guess_width, limits=(0.0, guess_width*5)),  # Width
+                StartingPar(value=1.5, limits=(0.5, 5.0)),  # Alpha low
+                StartingPar(value=1.5, limits=(0.5, 5.0)),  # Alpha high
+                StartingPar(value=2.0, limits=(1.0, 10.0)),  # n low
+                StartingPar(value=2.0, limits=(1.0, 10.0)),  # n high
+            ]
+        else:
+            raise NotImplementedError(f"Fit type {self._fit_type_signal} not implemented in MassFit.")
+
+        if self._fit_type_bg == FitTypeBg.POL1:
+
+            starting_pars_bg = []
+            bg_bin_low = self._hist.FindBin(self._fit_range[0])
+            bg_bin_high = self._hist.FindBin(self._fit_range[1] - 0.001)
+
+            bg_point_low = [self._fit_range[0], self._hist.GetBinContent(bg_bin_low)]
+            bg_point_high = [self._fit_range[1], self._hist.GetBinContent(bg_bin_high)]
+
+
+            pars = get_straight_line(bg_point_low, bg_point_high)
+            for par in pars:
+                starting_pars_bg.append(StartingPar(value=par, fixed=True))
+
+        else:
+            raise NotImplementedError(f"Fit type {self._fit_type_bg} not implemented in MassFit.")
+
+        self._starting_pars = starting_pars_signal + starting_pars_bg
+
+
 
     def _configure_fits(self):
         self._configure_fit_total()
@@ -264,29 +307,8 @@ class MassFit:
                 fit_total.SetParameter(par_index, starting_par.value)
 
         self._fit_total = fit_total
-        # for now we fix the BG parameters to straight line between fit range
-        if self._fit_type_bg == FitTypeBg.POL1:
-            self._overwrite_fit_parameters_bg()
 
         self._fit_total.SetNpx(1000)
-
-    def _overwrite_fit_parameters_bg(self):
-        bg_bin_low = self._hist.FindBin(self._fit_range[0])
-        bg_bin_high = self._hist.FindBin(self._fit_range[1])
-
-        bg_point_low = [self._fit_range[0], self._hist.GetBinContent(bg_bin_low)]
-        bg_point_high = [self._fit_range[1], self._hist.GetBinContent(bg_bin_high)]
-
-        bg_starting_params = get_straight_line(bg_point_low, bg_point_high)
-
-        self._fit_total.FixParameter(
-            self._fit_descriptor.par_index_start_bg,
-            bg_starting_params[0],
-        )
-        self._fit_total.FixParameter(
-            self._fit_descriptor.par_index_start_bg + 1,
-            bg_starting_params[1],
-        )
 
     def _configure_fit_signal(self):
         self._fit_signal = rt.TF1(
@@ -332,11 +354,16 @@ class MassFit:
             )
 
     def _compute_parameters(self):
+
+        if self._debug:
+            c = rt.TCanvas("c_debug", "c_debug", 800, 600)
+            self._hist.Draw()
+            c.SaveAs("debug_mass_fit.png")
         lower_bound = (
-            self.fit_mean.value + self.fit_width.value * self._range_signal.low
+            self.fit_mean.value + self.fit_width.value * self._range_signal[0]
         )
         upper_bound = (
-            self.fit_mean.value + self.fit_width.value * self._range_signal.high
+            self.fit_mean.value + self.fit_width.value * self._range_signal[1]
         )
         self._purity = self._fit_signal.Integral(
             lower_bound, upper_bound
@@ -419,16 +446,6 @@ class MassFit:
     def chi2_ndf(self) -> float:
         """Return chi2/ndf of the fit."""
         return self._fit_total.GetChisquare() / self._fit_total.GetNDF()
-
-    @property
-    def range_signal(self) -> RangeMassK0:
-        """Return the range of the signal region."""
-        return self._range_signal
-
-    @property
-    def range_sideband(self) -> RangeMassK0:
-        """Return the range of the sideband region."""
-        return self._range_sideband
 
     @property
     def purity(self) -> float:
